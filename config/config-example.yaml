@@ -1,0 +1,42 @@
+# Mini Agent TypeScript Configuration Example（教学项目）
+#
+# 配置文件查找顺序（从高到低）：
+# 1) mini-agent-typescript/config/config.yaml  （开发模式：项目目录）
+# 2) ~/.mini-agent/config/config.yaml          （用户目录：跨项目共用）
+#
+# 用法：
+# - 复制本文件为上述任一位置的 config.yaml
+# - 填入 api_key，并按需修改其它配置
+# - config.yaml / mcp.json / system_prompt.md 建议放在同一目录，便于相对路径引用
+
+# ===== LLM 配置 =====
+api_key: "YOUR_API_KEY_HERE"
+api_base: "https://api.minimax.io"   # 海外
+# api_base: "https://api.minimaxi.com"  # 国内
+model: "MiniMax-M2"
+provider: "anthropic"  # anthropic | openai
+
+# ===== 重试配置 =====
+retry:
+  enabled: true
+  max_retries: 3
+  initial_delay: 1.0
+  max_delay: 60.0
+  exponential_base: 2.0
+
+# ===== Agent 配置 =====
+max_steps: 50
+token_limit: 80000
+workspace_dir: "./workspace"
+system_prompt_path: "system_prompt.md"
+
+# ===== Tools 配置 =====
+tools:
+  enable_file_tools: true
+  enable_bash: true
+  enable_note: true
+  enable_skills: true
+  skills_dir: "./skills"
+  enable_mcp: true
+  mcp_config_path: "mcp.json"
+

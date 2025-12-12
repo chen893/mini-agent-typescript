@@ -1,0 +1,6 @@
+node_modules
+dist
+workspace
+.mini-agent
+.agent_memory.json
+.DS_Store

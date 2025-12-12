@@ -1,0 +1,30 @@
+{
+  "name": "mini-agent-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mini Agent（TypeScript 教学版）：面向中文 TypeScript 开发者的极简 Agent / Tools / Skills 示例项目",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev": "node --watch dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start:acp": "node dist/acp/server.js",
+    "lint": "eslint .",
+    "format": "prettier -w .",
+    "format:check": "prettier -c ."
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "typescript": "^4.9.5"
+  }
+}
