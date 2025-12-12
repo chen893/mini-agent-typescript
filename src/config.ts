@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { getHomeDir } from "./utils/homeDir.js";
+
 export interface RetryConfig {
   enabled: boolean;
   maxRetries: number;
@@ -42,18 +44,20 @@ export interface AppConfig {
   configDirAbs: string;
 }
 
-function getHomeDir(): string {
-  // Windows: USERPROFILE；Unix: HOME
-  return process.env.USERPROFILE || process.env.HOME || process.cwd();
-}
-
 async function fileExists(p: string): Promise<boolean> {
   try {
-    await fs.readFile(p, "utf-8");
-    return true;
+    const s = await fs.stat(p);
+    return s.isFile();
   } catch {
     return false;
   }
+}
+
+async function firstExistingFile(paths: string[]): Promise<string | null> {
+  for (const p of paths) {
+    if (await fileExists(p)) return p;
+  }
+  return null;
 }
 
 /**
@@ -146,35 +150,44 @@ function getObj(obj: Record<string, unknown>, key: string): Record<string, unkno
 }
 
 export class ConfigLoader {
-  /**
-   * 查找 config.yaml：
-   * - dev:   {cwd}/mini-agent-typescript/config/config.yaml
-   * - user:  {home}/.mini-agent/config/config.yaml
-   */
-  static async findConfigPath(): Promise<string> {
-    const dev = path.resolve(process.cwd(), "mini-agent-typescript", "config", "config.yaml");
-    if (await fileExists(dev)) return dev;
+   /**
+    * 查找 config.yaml：
+    * - dev:  {cwd}/config/config.yaml
+    * - dev2: {cwd}/mini-agent-typescript/config/config.yaml
+    * - user: {home}/.mini-agent/config/config.yaml
+    */
+  private static getConfigSearchPaths(): string[] {
+    return [
+      path.resolve(process.cwd(), "config", "config.yaml"),
+      path.resolve(process.cwd(), "mini-agent-typescript", "config", "config.yaml"),
+      path.resolve(getHomeDir(), ".mini-agent", "config", "config.yaml")
+    ];
+  }
 
-    const user = path.resolve(getHomeDir(), ".mini-agent", "config", "config.yaml");
-    if (await fileExists(user)) return user;
-
-    // 兜底：给出 dev 路径用于报错提示
-    return dev;
+  static async findConfigPath(): Promise<string | null> {
+    return firstExistingFile(ConfigLoader.getConfigSearchPaths());
   }
 
   static async load(): Promise<AppConfig> {
+    const searchPaths = ConfigLoader.getConfigSearchPaths();
     const configPath = await ConfigLoader.findConfigPath();
-    const configDirAbs = path.dirname(configPath);
+    if (!configPath) {
+      const exampleCandidates = [
+        path.resolve(process.cwd(), "config", "config-example.yaml"),
+        path.resolve(process.cwd(), "mini-agent-typescript", "config", "config-example.yaml")
+      ];
+      const examplePath = (await firstExistingFile(exampleCandidates)) ?? exampleCandidates[0]!;
 
-    if (!(await fileExists(configPath))) {
       throw new Error(
         [
           "Configuration file not found.",
-          `- Tried: ${configPath}`,
-          "You can copy `mini-agent-typescript/config/config-example.yaml` to one of the search locations as config.yaml."
+          ...searchPaths.map((p) => `- Tried: ${p}`),
+          `You can copy \`${examplePath}\` to one of the search locations as config.yaml.`
         ].join("\n")
       );
     }
+
+    const configDirAbs = path.dirname(configPath);
 
     const raw = await fs.readFile(configPath, "utf-8");
     const data = parseSimpleYaml(raw);
@@ -242,4 +255,3 @@ export class ConfigLoader {
     }
   }
 }
-

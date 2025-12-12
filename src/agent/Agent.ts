@@ -4,6 +4,8 @@ import { AgentLogger } from "../logger.js";
 import type { JsonObject, Message, ToolCall } from "../schema.js";
 import type { Tool, ToolResult } from "../tools/Tool.js";
 
+const SUMMARY_MARKER = "[Assistant Execution Summary]";
+
 /**
  * Agent（与 Python 版 mini_agent/agent.py 尽量保持一致）
  *
@@ -23,7 +25,8 @@ export class Agent {
   readonly tools: Record<string, Tool>;
   readonly messages: Message[];
 
-  private apiTotalTokens = 0;
+  // API 返回的“最近一次请求 totalTokens”（prompt+completion），不是累计值。
+  private apiLastTotalTokens = 0;
   private skipNextTokenCheck = false;
   private readonly logger: AgentLogger;
   private readonly workspaceDirAbs: string;
@@ -97,12 +100,12 @@ export class Agent {
     }
 
     const estimated = this.estimateTokensFallback();
-    const should = estimated > this.tokenLimit || this.apiTotalTokens > this.tokenLimit;
+    const should = estimated > this.tokenLimit || this.apiLastTotalTokens > this.tokenLimit;
     if (!should) return;
 
     if (this.verbose) {
       console.log(
-        `\n[context] token usage (estimated=${estimated}, api_total=${this.apiTotalTokens}, limit=${this.tokenLimit})`
+        `\n[context] token usage (estimated=${estimated}, api_total=${this.apiLastTotalTokens}, limit=${this.tokenLimit})`
       );
       console.log("[context] triggering message history summarization...");
     }
@@ -120,15 +123,26 @@ export class Agent {
       const cur = userIdx[i]!;
       const next = i < userIdx.length - 1 ? userIdx[i + 1]! : this.messages.length;
 
-      newMessages.push(this.messages[cur]!); // keep user
+      newMessages.push(this.messages[cur]!); // 保留 user 消息
 
       const execMessages = this.messages.slice(cur + 1, next);
       if (execMessages.length) {
+        // 避免重复触发摘要时出现“摘要的摘要”。
+        if (
+          execMessages.length === 1 &&
+          execMessages[0]!.role === "assistant" &&
+          execMessages[0]!.content.startsWith(SUMMARY_MARKER)
+        ) {
+          newMessages.push(execMessages[0]!);
+          continue;
+        }
+
         const summaryText = await this.createSummary(execMessages, i + 1);
         if (summaryText) {
           newMessages.push({
-            role: "user",
-            content: `[Assistant Execution Summary]\n\n${summaryText}`
+            // 使用 assistant，避免覆盖 Anthropic 的单 system 字段。
+            role: "assistant",
+            content: `${SUMMARY_MARKER}\n\n${summaryText}`
           });
           summaryCount++;
         }
@@ -139,23 +153,32 @@ export class Agent {
     this.messages.push(...newMessages);
 
     this.skipNextTokenCheck = true;
-    void summaryCount; // for parity with python logs; CLI 里可以打印
+    void summaryCount; // 与 Python 版日志保持一致；CLI 里可按需打印
   }
 
   private async createSummary(messages: Message[], roundNum: number): Promise<string> {
     if (!messages.length) return "";
 
+    const MAX_SUMMARY_INPUT_CHARS = 40_000;
+    const MAX_TOOL_SNIPPET_CHARS = 2_000;
+    const MAX_ASSISTANT_SNIPPET_CHARS = 4_000;
+
     // 为了最大化一致性，这里复刻 Python 版 summary prompt 的风格与要求（英文摘要）。
     let summaryContent = `Round ${roundNum} execution process:\n\n`;
     for (const msg of messages) {
       if (msg.role === "assistant") {
-        summaryContent += `Assistant: ${msg.content}\n`;
+        summaryContent += `Assistant: ${truncateForSummary(msg.content, MAX_ASSISTANT_SNIPPET_CHARS)}\n`;
         if (msg.toolCalls?.length) {
           const names = msg.toolCalls.map((t) => t.function.name);
           summaryContent += `  -> Called tools: ${names.join(", ")}\n`;
         }
       } else if (msg.role === "tool") {
-        summaryContent += `  <- Tool returned: ${msg.content}...\n`;
+        summaryContent += `  <- Tool returned: ${truncateForSummary(msg.content, MAX_TOOL_SNIPPET_CHARS)}\n`;
+      }
+
+      if (summaryContent.length >= MAX_SUMMARY_INPUT_CHARS) {
+        summaryContent += "\n...(truncated summary input to avoid context overflow)...\n";
+        break;
       }
     }
 
@@ -206,7 +229,7 @@ export class Agent {
         toolNames: Object.values(this.tools).map((t) => t.name)
       });
       const response = await this.llm.generate(this.messages, toolSchemas);
-      this.apiTotalTokens = response.usage?.totalTokens ?? this.apiTotalTokens;
+      this.apiLastTotalTokens = response.usage?.totalTokens ?? this.apiLastTotalTokens;
 
       await this.logger.logResponse({
         content: response.content,
@@ -301,4 +324,13 @@ function truncateArgs(args: JsonObject): JsonObject {
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars) + "\n... (truncated)";
+}
+
+function truncateForSummary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const headLen = Math.floor(maxChars * 0.7);
+  const tailLen = Math.max(0, maxChars - headLen);
+  const head = text.slice(0, headLen);
+  const tail = tailLen ? text.slice(-tailLen) : "";
+  return `${head}\n... (truncated ${text.length} chars) ...\n${tail}`;
 }

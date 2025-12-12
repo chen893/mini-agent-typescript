@@ -17,12 +17,16 @@ import type { LLMClientBase } from "./base.js";
  * - 一些兼容端点（如 MiniMax）会返回 reasoning_details，并要求你把它在下一轮原样带回（保持 interleaved thinking 连贯）
  */
 export class OpenAIClient implements LLMClientBase {
+  private readonly enableReasoningSplit: boolean;
+
   constructor(
     private readonly apiKey: string,
     private readonly apiBase: string,
     private readonly model: string,
     private readonly retry: RetryConfig
-  ) {}
+  ) {
+    this.enableReasoningSplit = shouldEnableReasoningSplit(apiBase);
+  }
 
   async generate(messages: Message[], tools?: JsonObject[]): Promise<LLMResponse> {
     return asyncRetry(this.retry, async () => {
@@ -30,10 +34,10 @@ export class OpenAIClient implements LLMClientBase {
 
       const body: JsonObject = {
         model: this.model,
-        messages: apiMessages,
-        // MiniMax 的 OpenAI 兼容端点用 extra_body 开启推理拆分（与 Python 版一致）
-        extra_body: { reasoning_split: true }
+        messages: apiMessages
       };
+      // MiniMax 的 OpenAI 兼容端点用 extra_body 开启推理拆分（与 Python 版一致）
+      if (this.enableReasoningSplit) body.extra_body = { reasoning_split: true };
       if (tools?.length) body.tools = tools;
 
       const resp = await fetch(`${this.apiBase.replace(/\/$/, "")}/chat/completions`, {
@@ -85,7 +89,7 @@ export class OpenAIClient implements LLMClientBase {
         }
 
         // 保持 interleaved thinking：把 reasoning_details 原样回传（与 Python 版一致）
-        if (msg.thinking) {
+        if (this.enableReasoningSplit && msg.thinking) {
           m.reasoning_details = [{ text: msg.thinking }];
         }
 
@@ -128,8 +132,8 @@ export class OpenAIClient implements LLMClientBase {
           try {
             args = JSON.parse(argsText);
           } catch {
-            // 兼容：如果服务端返回了非 JSON 字符串，保持空对象并把原文丢给模型（tool 执行会失败并反馈）
-            args = {};
+            // 兼容：如果服务端返回了非 JSON 字符串，把原文保存在参数中，便于模型自我修复。
+            args = { _unparsed_arguments: argsText };
           }
         }
 
@@ -157,9 +161,17 @@ export class OpenAIClient implements LLMClientBase {
       content,
       thinking: thinking || undefined,
       toolCalls: toolCalls.length ? toolCalls : undefined,
-      finishReason: "stop",
+      finishReason: String(choice?.finish_reason ?? "stop"),
       usage
     };
   }
 }
 
+function shouldEnableReasoningSplit(apiBase: string): boolean {
+  try {
+    const host = new URL(apiBase).hostname.toLowerCase();
+    return host.includes("minimax");
+  } catch {
+    return apiBase.toLowerCase().includes("minimax");
+  }
+}

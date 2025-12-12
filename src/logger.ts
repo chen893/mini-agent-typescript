@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { JsonObject, Message, ToolCall } from "./schema.js";
+import { getHomeDir } from "./utils/homeDir.js";
 
 /**
  * AgentLogger（尽量对齐 Python 版 mini_agent/logger.py）
@@ -21,8 +22,7 @@ export class AgentLogger {
   private logIndex = 0;
 
   constructor() {
-    const home = getHomeDir();
-    this.logDirAbs = path.resolve(home, ".mini-agent", "log");
+    this.logDirAbs = path.resolve(getHomeDir(), ".mini-agent", "log");
   }
 
   async startNewRun(): Promise<void> {
@@ -124,16 +124,12 @@ export class AgentLogger {
   }
 }
 
-function getHomeDir(): string {
-  return process.env.USERPROFILE || process.env.HOME || process.cwd();
-}
-
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
 function formatTimestampForFilename(d: Date): string {
-  // YYYYMMDD_HHMMSS
+  // YYYYMMDD_HHMMSS（用于文件名）
   return (
     String(d.getFullYear()) +
     pad2(d.getMonth() + 1) +
@@ -146,7 +142,7 @@ function formatTimestampForFilename(d: Date): string {
 }
 
 function formatTimestampForHuman(d: Date): string {
-  // YYYY-MM-DD HH:mm:ss.SSS
+  // YYYY-MM-DD HH:mm:ss.SSS（用于日志展示）
   return (
     String(d.getFullYear()) +
     "-" +
@@ -163,4 +159,3 @@ function formatTimestampForHuman(d: Date): string {
     String(d.getMilliseconds()).padStart(3, "0")
   );
 }
-

@@ -37,14 +37,17 @@ export class AnthropicClient implements LLMClientBase {
       if (system) body.system = system;
       if (tools?.length) body.tools = tools;
 
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01"
+      };
+      // 有些 Anthropic 兼容端点要求 Authorization: Bearer；官方 API 使用 x-api-key。
+      if (!isAnthropicOfficial(this.apiBase)) headers.authorization = `Bearer ${this.apiKey}`;
+
       const resp = await fetch(`${this.apiBase.replace(/\/$/, "")}/messages`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": this.apiKey,
-          authorization: `Bearer ${this.apiKey}`,
-          "anthropic-version": "2023-06-01"
-        },
+        headers,
         body: JSON.stringify(body)
       });
 
@@ -157,3 +160,11 @@ export class AnthropicClient implements LLMClientBase {
   }
 }
 
+function isAnthropicOfficial(apiBase: string): boolean {
+  try {
+    const host = new URL(apiBase).hostname.toLowerCase();
+    return host.endsWith("anthropic.com");
+  } catch {
+    return apiBase.toLowerCase().includes("anthropic.com");
+  }
+}

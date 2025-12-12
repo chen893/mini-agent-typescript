@@ -6,6 +6,8 @@ import { BaseTool, type ToolResult } from "./Tool.js";
 
 const execAsync = promisify(exec);
 
+const MAX_OUTPUT_LINES = 20_000;
+
 function asString(v: unknown, name: string): string {
   if (typeof v !== "string") throw new Error(`Expected '${name}' to be string`);
   return v;
@@ -31,6 +33,7 @@ type BackgroundShell = {
   exitCode: number | null;
   outputLines: string[];
   lastReadIndex: number;
+  droppedLines: number;
   proc: ReturnType<typeof spawn>;
 };
 
@@ -73,6 +76,52 @@ function splitLines(chunk: Uint8Array): string[] {
   // 这里用 utf-8 解码；Windows 下 PowerShell 可能输出非 utf8，但教学项目先简化
   const text = Buffer.from(chunk).toString("utf-8");
   return text.split(/\r?\n/).filter((l) => l.length);
+}
+
+function pushOutputLines(shell: BackgroundShell, lines: string[]): void {
+  if (!lines.length) return;
+  shell.outputLines.push(...lines);
+
+  const overflow = shell.outputLines.length - MAX_OUTPUT_LINES;
+  if (overflow <= 0) return;
+
+  shell.outputLines.splice(0, overflow);
+  shell.lastReadIndex = Math.max(0, shell.lastReadIndex - overflow);
+  shell.droppedLines += overflow;
+}
+
+function truncationNote(shell: BackgroundShell): string {
+  return shell.droppedLines > 0 ? `[output truncated: dropped ${shell.droppedLines} line(s)]\n` : "";
+}
+
+async function terminateShell(shell: BackgroundShell): Promise<void> {
+  try {
+    shell.proc.kill("SIGTERM");
+  } catch {
+    // 忽略
+  }
+
+  // 某些子进程（尤其是 Windows）可能不会很快触发 close 事件。
+  await new Promise((r) => setTimeout(r, 500));
+  if (shell.exitCode === null) {
+    try {
+      shell.proc.kill("SIGKILL");
+    } catch {
+      // 忽略
+    }
+  }
+
+  shell.status = "terminated";
+  BackgroundShellManager.remove(shell.bashId);
+}
+
+export async function cleanupBashBackgroundShells(): Promise<void> {
+  const ids = BackgroundShellManager.listIds();
+  for (const id of ids) {
+    const shell = BackgroundShellManager.get(id);
+    if (!shell) continue;
+    await terminateShell(shell);
+  }
 }
 
 function formatBashOutput(opts: {
@@ -122,7 +171,7 @@ export class BashTool extends BaseTool {
       if (runInBackground) {
         const bashId = genId();
 
-        // Windows: powershell -Command <cmd>；Unix: bash -lc <cmd>
+        // Windows：powershell -Command <cmd>；其它平台：bash -lc <cmd>
         const proc = isWindows
           ? spawn("powershell.exe", ["-NoProfile", "-Command", command], { stdio: ["ignore", "pipe", "pipe"] })
           : spawn("bash", ["-lc", command], { stdio: ["ignore", "pipe", "pipe"] });
@@ -135,15 +184,16 @@ export class BashTool extends BaseTool {
           exitCode: null,
           outputLines: [],
           lastReadIndex: 0,
+          droppedLines: 0,
           proc
         };
 
         // 合并 stdout/stderr 到一份 outputLines（与 Python 版一致）
-        proc.stdout?.on("data", (chunk: Uint8Array) => shell.outputLines.push(...splitLines(chunk)));
-        proc.stderr?.on("data", (chunk: Uint8Array) => shell.outputLines.push(...splitLines(chunk)));
+        proc.stdout?.on("data", (chunk: Uint8Array) => pushOutputLines(shell, splitLines(chunk)));
+        proc.stderr?.on("data", (chunk: Uint8Array) => pushOutputLines(shell, splitLines(chunk)));
         proc.on("close", (code: number | null) => {
           shell.exitCode = code;
-          shell.status = code === 0 ? "completed" : "failed";
+          if (shell.status !== "terminated") shell.status = code === 0 ? "completed" : "failed";
         });
 
         BackgroundShellManager.add(shell);
@@ -239,7 +289,7 @@ export class BashOutputTool extends BaseTool {
         }
       }
 
-      const stdout = newLines.join("\n");
+      const stdout = truncationNote(shell) + newLines.join("\n");
       return {
         success: true,
         content: formatBashOutput({
@@ -288,30 +338,12 @@ export class BashKillTool extends BaseTool {
       const remaining = shell.outputLines.slice(shell.lastReadIndex);
       shell.lastReadIndex = shell.outputLines.length;
 
-      try {
-        shell.proc.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
-
-      // 与 Python 版一致：先尝试温和终止，再在短时间后强杀（避免卡住）
-      await new Promise((r) => setTimeout(r, 500));
-      if (shell.exitCode === null) {
-        try {
-          shell.proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-      }
-
-      shell.status = "terminated";
-
-      BackgroundShellManager.remove(bashId);
+      await terminateShell(shell);
 
       return {
         success: true,
         content: formatBashOutput({
-          stdout: remaining.join("\n"),
+          stdout: truncationNote(shell) + remaining.join("\n"),
           stderr: "",
           exitCode: shell.exitCode ?? 0,
           bashId

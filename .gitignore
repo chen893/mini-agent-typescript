@@ -4,3 +4,5 @@ workspace
 .mini-agent
 .agent_memory.json
 .DS_Store
+
+/config/config.yaml

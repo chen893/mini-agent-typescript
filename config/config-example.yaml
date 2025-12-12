@@ -1,8 +1,9 @@
 # Mini Agent TypeScript Configuration Example（教学项目）
 #
 # 配置文件查找顺序（从高到低）：
-# 1) mini-agent-typescript/config/config.yaml  （开发模式：项目目录）
-# 2) ~/.mini-agent/config/config.yaml          （用户目录：跨项目共用）
+# 1) {cwd}/config/config.yaml                   （开发模式：在仓库根目录运行时）
+# 2) {cwd}/mini-agent-typescript/config/config.yaml（开发模式：在父目录运行时）
+# 3) ~/.mini-agent/config/config.yaml           （用户目录：跨项目共用）
 #
 # 用法：
 # - 复制本文件为上述任一位置的 config.yaml
@@ -39,4 +40,3 @@ tools:
   skills_dir: "./skills"
   enable_mcp: true
   mcp_config_path: "mcp.json"
-

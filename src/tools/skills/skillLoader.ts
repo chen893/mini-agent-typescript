@@ -19,7 +19,7 @@ export interface Skill {
  * - 通过 get_skill 工具按需返回完整 Skill 内容（Level 2）
  *
  * Skill 文件结构（与 skill.md 一致）：
- * skill-name/
+ * skill-name/（技能目录）
  *   SKILL.md   # 必须：YAML frontmatter + 指令主体
  *   scripts/   # 可选：脚本
  *   reference/ # 可选：更多文档
@@ -104,8 +104,8 @@ export class SkillLoader {
         description,
         content: processedContent,
         license: frontmatter.license,
-        allowedTools: frontmatter["allowed-tools"],
-        metadata: frontmatter.metadata,
+        allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
+        metadata: parseMetadata(frontmatter.metadata),
         skillPathAbs
       };
     } catch {
@@ -127,7 +127,7 @@ export class SkillLoader {
    * 3) Markdown 链接 [text](./reference/xxx.md)
    */
   private async processSkillPaths(content: string, skillDirAbs: string): Promise<string> {
-    // Pattern 1: (python\s+|`)(scripts/... etc)
+    // 模式 1：匹配 (python\s+|`) 后跟 scripts/... 等相对路径
     const patternDirs = /(python\s+|`)((?:scripts|examples|templates|reference)\/[^\s`\)]+)/g;
     content = await replaceAsync(content, patternDirs, async (m, prefix, relPath) => {
       const abs = path.resolve(skillDirAbs, relPath);
@@ -135,7 +135,7 @@ export class SkillLoader {
       return m;
     });
 
-    // Pattern 2: "see reference.md"
+    // 模式 2：匹配 "see/read/refer to/check xxx.md" 这类自然语言引用
     const patternDocs = /(see|read|refer to|check)\s+([a-zA-Z0-9_-]+\.(?:md|txt|json|yaml))([.,;\s])/gi;
     content = await replaceAsync(content, patternDocs, async (m, prefix, filename, suffix) => {
       const abs = path.resolve(skillDirAbs, filename);
@@ -143,7 +143,7 @@ export class SkillLoader {
       return m;
     });
 
-    // Pattern 3: Markdown links with optional prefix words
+    // 模式 3：匹配 Markdown 链接（可带 Read/See/Check... 等前缀词）
     const patternMarkdown =
       /(?:(Read|See|Check|Refer to|Load|View)\s+)?\[(`?[^`\]]+`?)\]\(((?:\.\/)?[^)]+\.(?:md|txt|json|yaml|js|py|html))\)/gi;
     content = await replaceAsync(content, patternMarkdown, async (m, prefix, linkText, filepath) => {
@@ -195,22 +195,23 @@ async function exists(p: string): Promise<boolean> {
  * Skill 的 frontmatter 通常很小，字段也固定，因此这里用“简化解析”：
  * - 只支持 key: value 的一层结构（不支持嵌套、数组）
  * - 足够满足 name/description/license 等字段
- */
-function parseFrontmatter(input: string): { frontmatter: Record<string, any>; body: string } | null {
-  const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/m.exec(input);
+  */
+function parseFrontmatter(input: string): { frontmatter: Record<string, string>; body: string } | null {
+  // 同时支持 LF 与 CRLF（Windows 常见）。
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/m.exec(input);
   if (!m) return null;
 
   const rawYaml = m[1] ?? "";
   const body = m[2] ?? "";
 
-  const frontmatter: Record<string, any> = {};
+  const frontmatter: Record<string, string> = {};
   for (const line of rawYaml.split(/\r?\n/)) {
     const trimmed = (line.split("#")[0] ?? "").trim();
     if (!trimmed) continue;
     const kv = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(trimmed);
     if (!kv) continue;
     const key = kv[1]!;
-    let value: any = kv[2] ?? "";
+    let value: string = kv[2] ?? "";
     value = value.trim();
     const quoted = /^"(.*)"$/.exec(value) || /^'(.*)'$/.exec(value);
     if (quoted) value = quoted[1] ?? "";
@@ -218,6 +219,60 @@ function parseFrontmatter(input: string): { frontmatter: Record<string, any>; bo
   }
 
   return { frontmatter, body };
+}
+
+function parseAllowedTools(v: unknown): string[] | undefined {
+  if (typeof v !== "string") return undefined;
+  const raw = v.trim();
+  if (!raw) return undefined;
+
+  // 支持极简的行内列表："a, b" 或 "[a, b]"。
+  const inner = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+  const parts = inner
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(stripQuotes);
+  return parts.length ? parts : undefined;
+}
+
+function parseMetadata(v: unknown): Record<string, string> | undefined {
+  if (typeof v !== "string") return undefined;
+  const raw = v.trim();
+  if (!raw) return undefined;
+
+  // 允许用 JSON 对象字符串作为紧凑的一行写法。
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const out: Record<string, string> = {};
+      for (const [k, val] of Object.entries(parsed as Record<string, unknown>)) {
+        out[String(k)] = typeof val === "string" ? val : String(val);
+      }
+      return Object.keys(out).length ? out : undefined;
+    }
+  } catch {
+    // 解析失败：继续尝试后备格式
+  }
+
+  // 兜底：解析 "k=v, a=b" 这种键值对写法。
+  const out: Record<string, string> = {};
+  for (const part of raw.split(/[;,]/)) {
+    const p = part.trim();
+    if (!p) continue;
+    const idx = p.indexOf("=");
+    if (idx === -1) continue;
+    const key = p.slice(0, idx).trim();
+    const value = p.slice(idx + 1).trim();
+    if (!key) continue;
+    out[key] = stripQuotes(value);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function stripQuotes(s: string): string {
+  const quoted = /^"(.*)"$/.exec(s) || /^'(.*)'$/.exec(s);
+  return quoted ? (quoted[1] ?? "") : s;
 }
 
 async function replaceAsync(
@@ -244,4 +299,3 @@ async function replaceAsync(
   }
   return out;
 }
-

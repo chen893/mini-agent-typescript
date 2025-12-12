@@ -45,9 +45,13 @@ type JsonRpcResponse = {
   error?: { code: number; message: string; data?: any };
 };
 
+const MAX_CONTENT_LENGTH_BYTES = 10 * 1024 * 1024; // 上限：10MB
+const MAX_BUFFER_BYTES = 20 * 1024 * 1024; // 防护：避免畸形输入导致 buffer 无限制增长
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
 class JsonRpcStdioClient {
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer?: any }>();
   private buffer: Buffer = Buffer.from("");
 
   constructor(private readonly proc: ReturnType<typeof spawn>) {
@@ -57,6 +61,7 @@ class JsonRpcStdioClient {
     });
     proc.on("close", () => {
       for (const [id, p] of this.pending) {
+        if (p.timer) clearTimeout(p.timer);
         p.reject(new Error(`MCP process closed (pending id=${id})`));
       }
       this.pending.clear();
@@ -69,6 +74,12 @@ class JsonRpcStdioClient {
    */
   private onData(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
+
+    // 防护：对端若发送畸形数据（例如 header 永远不结束），避免内存无限增长。
+    if (this.buffer.length > MAX_BUFFER_BYTES) {
+      this.buffer = Buffer.from("");
+      return;
+    }
 
     while (true) {
       const headerEnd = this.buffer.indexOf("\r\n\r\n");
@@ -83,6 +94,11 @@ class JsonRpcStdioClient {
       }
 
       const len = Number(m[1]);
+      if (!Number.isFinite(len) || len < 0 || len > MAX_CONTENT_LENGTH_BYTES) {
+        // 长度不合法：丢弃当前 header，继续寻找下一帧。
+        this.buffer = this.buffer.slice(headerEnd + 4);
+        continue;
+      }
       const bodyStart = headerEnd + 4;
       const bodyEnd = bodyStart + len;
       if (this.buffer.length < bodyEnd) break; // 等更多数据
@@ -94,7 +110,7 @@ class JsonRpcStdioClient {
         const msg = JSON.parse(body) as JsonRpcResponse;
         this.dispatch(msg);
       } catch {
-        // ignore malformed
+        // 忽略畸形数据
       }
     }
   }
@@ -111,15 +127,38 @@ class JsonRpcStdioClient {
     p.resolve(resp.result);
   }
 
-  async request<T = any>(method: string, params?: any): Promise<T> {
+  async request<T = any>(method: string, params?: any, opts?: { timeoutMs?: number }): Promise<T> {
     const id = this.nextId++;
     const req: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
     const json = JSON.stringify(req);
     const frame = `Content-Length: ${Buffer.byteLength(json, "utf-8")}\r\n\r\n${json}`;
 
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const result = await new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.proc.stdin?.write(frame);
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP request timeout after ${timeoutMs}ms (method=${method}, id=${id})`));
+      }, timeoutMs);
+
+      this.pending.set(id, {
+        timer,
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        }
+      });
+
+      if (!this.proc.stdin) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(new Error("MCP process stdin is not writable"));
+        return;
+      }
+      this.proc.stdin.write(frame);
     });
     return result;
   }
@@ -128,7 +167,7 @@ class JsonRpcStdioClient {
     try {
       this.proc.kill("SIGTERM");
     } catch {
-      // ignore
+      // 忽略
     }
   }
 }
@@ -232,4 +271,3 @@ export async function cleanupMcpConnections(): Promise<void> {
 export function resolveMcpConfigPath(configDirAbs: string, mcpConfigPath: string): string {
   return path.isAbsolute(mcpConfigPath) ? mcpConfigPath : path.resolve(configDirAbs, mcpConfigPath);
 }
-

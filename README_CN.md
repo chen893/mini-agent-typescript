@@ -17,10 +17,11 @@
 
 把示例配置复制为 `config.yaml`（二选一放置）：
 
-- 开发模式：`mini-agent-typescript/config/config.yaml`
+- 开发模式（在仓库根目录运行时）：`config/config.yaml`
+- 开发模式（在父目录运行时）：`mini-agent-typescript/config/config.yaml`
 - 用户目录：`~/.mini-agent/config/config.yaml`
 
-示例文件在：`mini-agent-typescript/config/config-example.yaml`
+示例文件在：`config/config-example.yaml`（或：`mini-agent-typescript/config/config-example.yaml`）
 
 填入你的 MiniMax Key 与平台地址：
 

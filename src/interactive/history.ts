@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getHomeDir } from "../utils/homeDir.js";
 
 /**
  * 输入历史（对齐 Python 版 prompt_toolkit FileHistory）
@@ -12,8 +13,7 @@ import path from "node:path";
  */
 
 export function defaultHistoryFile(): string {
-  const home = process.env.USERPROFILE || process.env.HOME || process.cwd();
-  return path.resolve(home, ".mini-agent", "history.txt");
+  return path.resolve(getHomeDir(), ".mini-agent", "history.txt");
 }
 
 export async function loadHistory(fileAbs: string, limit = 200): Promise<string[]> {
@@ -31,4 +31,3 @@ export async function appendHistory(fileAbs: string, line: string): Promise<void
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(fileAbs, line.replace(/\r?\n/g, "\\n") + "\n", "utf-8");
 }
-

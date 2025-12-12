@@ -1,5 +1,5 @@
 /**
- * JSON-RPC 2.0 over stdio with "Content-Length" framing (LSP style).
+ * 通过 stdio 传输的 JSON-RPC 2.0（使用 "Content-Length" 分帧，风格类似 LSP）。
  *
  * 这是 Agent/MCP/ACP 生态里非常常见的一种“进程间通信”方式：
  * - 父进程启动子进程
@@ -46,6 +46,9 @@ export type JsonRpcResponse = {
 
 export type JsonRpcHandler = (params: any) => Promise<any> | any;
 
+const MAX_CONTENT_LENGTH_BYTES = 10 * 1024 * 1024; // 上限：10MB
+const MAX_BUFFER_BYTES = 20 * 1024 * 1024; // 防护：避免畸形输入导致 buffer 无限制增长
+
 export class JsonRpcStdioConnection {
   private buffer: Buffer = Buffer.from("");
   private handlers = new Map<string, JsonRpcHandler>();
@@ -61,7 +64,7 @@ export class JsonRpcStdioConnection {
   }
 
   /**
-   * 开始监听 stdin，并处理 incoming JSON-RPC messages。
+   * 开始监听 stdin，并处理输入的 JSON-RPC 消息。
    */
   start(): void {
     this.stdin.on("data", (chunk: Uint8Array) => {
@@ -117,6 +120,13 @@ export class JsonRpcStdioConnection {
   private onData(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
 
+    // 防护：对端若发送畸形数据（例如 header 永远不结束），避免内存无限增长。
+    if (this.buffer.length > MAX_BUFFER_BYTES) {
+      this.onError(new Error(`JSON-RPC buffer exceeded ${MAX_BUFFER_BYTES} bytes; dropping buffer`));
+      this.buffer = Buffer.from("");
+      return;
+    }
+
     // 流式解析：可能一次 data 里包含多个帧，也可能只包含半个帧
     while (true) {
       const headerEnd = this.buffer.indexOf("\r\n\r\n");
@@ -131,6 +141,12 @@ export class JsonRpcStdioConnection {
       }
 
       const len = Number(m[1]);
+      if (!Number.isFinite(len) || len < 0 || len > MAX_CONTENT_LENGTH_BYTES) {
+        this.onError(new Error(`Invalid Content-Length: ${String(m[1])}`));
+        // 丢弃当前 header，继续寻找下一帧（容错）。
+        this.buffer = this.buffer.slice(headerEnd + 4);
+        continue;
+      }
       const bodyStart = headerEnd + 4;
       const bodyEnd = bodyStart + len;
       if (this.buffer.length < bodyEnd) return; // 等更多数据
@@ -146,12 +162,13 @@ export class JsonRpcStdioConnection {
       }
 
       // JSON-RPC：有 id => request/response；无 id => notification
-      if (msg && msg.jsonrpc === "2.0" && msg.method && msg.id !== undefined) {
+      const methodOk = typeof msg?.method === "string" && msg.method.length > 0;
+      const idOk = typeof msg?.id === "number" || typeof msg?.id === "string";
+      if (msg && msg.jsonrpc === "2.0" && methodOk && idOk) {
         void this.dispatchRequest(msg as JsonRpcRequest);
-      } else if (msg && msg.jsonrpc === "2.0" && msg.method && msg.id === undefined) {
+      } else if (msg && msg.jsonrpc === "2.0" && methodOk && msg.id === undefined) {
         this.dispatchNotification(msg as JsonRpcNotification);
       }
     }
   }
 }
-

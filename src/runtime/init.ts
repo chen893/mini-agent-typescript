@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { Agent } from "../agent/Agent.js";
 import { ConfigLoader, type AppConfig } from "../config.js";
 import { LLMClient } from "../llm/LLMClient.js";
-import { BashKillTool, BashOutputTool, BashTool } from "../tools/bashTool.js";
+import { BashKillTool, BashOutputTool, BashTool, cleanupBashBackgroundShells } from "../tools/bashTool.js";
 import { ReadFileTool, WriteFileTool, EditFileTool } from "../tools/fileTools.js";
 import { defaultMemoryFile, RecallNotesTool, RecordNoteTool } from "../tools/noteTools.js";
 import { cleanupMcpConnections, loadMcpTools, resolveMcpConfigPath } from "../tools/mcpLoader.js";
@@ -42,14 +42,14 @@ export async function resolveSkillsDir(config: AppConfig): Promise<string> {
     path.resolve(process.cwd(), "mini-agent-typescript", "skills")
   ];
 
-  for (const c of candidates) {
-    try {
-      const s = await fs.stat(c);
-      if (s.isDirectory()) return c;
-    } catch {
-      // ignore
+    for (const c of candidates) {
+      try {
+        const s = await fs.stat(c);
+        if (s.isDirectory()) return c;
+      } catch {
+      // 忽略
+      }
     }
-  }
 
   return path.resolve(process.cwd(), "mini-agent-typescript", "skills");
 }
@@ -61,12 +61,12 @@ export async function initializeBaseTools(config: AppConfig): Promise<{
   const tools: Tool[] = [];
   let skillLoader: SkillLoader | null = null;
 
-  // 1) Bash tools
+  // 1) Bash 工具
   if (config.tools.enableBash) {
     tools.push(new BashTool(), new BashOutputTool(), new BashKillTool());
   }
 
-  // 2) Skills (Progressive Disclosure)
+  // 2) Skills（渐进式加载 / Progressive Disclosure）
   if (config.tools.enableSkills) {
     const skillsDirAbs = await resolveSkillsDir(config);
     skillLoader = new SkillLoader(skillsDirAbs);
@@ -74,7 +74,7 @@ export async function initializeBaseTools(config: AppConfig): Promise<{
     tools.push(new GetSkillTool(skillLoader));
   }
 
-  // 3) MCP tools
+  // 3) MCP 工具
   if (config.tools.enableMcp) {
     try {
       const mcpPathAbs = resolveMcpConfigPath(config.configDirAbs, config.tools.mcpConfigPath);
@@ -152,4 +152,5 @@ export async function loadConfig(): Promise<AppConfig> {
 
 export async function cleanup(): Promise<void> {
   await cleanupMcpConnections();
+  await cleanupBashBackgroundShells();
 }
