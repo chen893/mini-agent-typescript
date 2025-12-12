@@ -70,6 +70,10 @@ Skill 的设计与写法参考仓库根目录的 `skill.md`（渐进式加载的
 
 你可以照着它新建自己的 Skill：只要目录下有 `SKILL.md` 且带 YAML frontmatter（name/description），就会被自动发现并加载元数据。
 
+## 学习文档（推荐）
+
+从 `mini-agent-typescript/docs/README.md` 开始，里面给了“阅读顺序 + 心智模型 + 练习题”。
+
 ## MCP（可选）
 
 配置文件：`mini-agent-typescript/config/mcp.json`
