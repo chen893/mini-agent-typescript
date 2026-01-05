@@ -45,7 +45,7 @@ export class AnthropicClient implements LLMClientBase {
       // 有些 Anthropic 兼容端点要求 Authorization: Bearer；官方 API 使用 x-api-key。
       if (!isAnthropicOfficial(this.apiBase)) headers.authorization = `Bearer ${this.apiKey}`;
 
-      const resp = await fetch(`${this.apiBase.replace(/\/$/, "")}/messages`, {
+      const resp = await fetch(`${this.apiBase.replace(/\/$/, "")}/v1/messages`, {
         method: "POST",
         headers,
         body: JSON.stringify(body)
